@@ -23,11 +23,10 @@ const ALLOWED_ORIGINS = [
 
 app.use(cors({
   origin: (origin, cb) => {
-    // Allow requests with no origin (curl, Postman, server-side)
     if (!origin || ALLOWED_ORIGINS.includes(origin)) return cb(null, true)
     return cb(new Error(`CORS: origin ${origin} not allowed`))
   },
-  methods: ['GET', 'POST', 'OPTIONS'],
+  methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true,
 }))
@@ -124,39 +123,108 @@ This tool is used in an **academic setting and will be reviewed by faculty**. Yo
 - **E**nd with an opening, not a conclusion.`
 }
 
-// ─── /api/chat — SSE streaming endpoint ─────────────────────────────────────────────────────
+// ─── Session routes ────────────────────────────────────────────────────────────
+
+// GET /api/sessions?device_id=xxx  — list sessions (newest first)
+app.get('/api/sessions', async (req, res) => {
+  const { device_id } = req.query
+  if (!device_id) return res.status(400).json({ error: 'device_id required' })
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, title, created_at, updated_at
+       FROM chat_sessions
+       WHERE device_id = $1
+       ORDER BY updated_at DESC
+       LIMIT 50`,
+      [device_id]
+    )
+    res.json(rows)
+  } catch (e) { res.status(500).json({ error: e.message }) }
+})
+
+// POST /api/sessions  — create session
+app.post('/api/sessions', async (req, res) => {
+  const { device_id, title = 'New conversation' } = req.body
+  if (!device_id) return res.status(400).json({ error: 'device_id required' })
+  try {
+    const { rows } = await pool.query(
+      `INSERT INTO chat_sessions (device_id, title)
+       VALUES ($1, $2) RETURNING id, title, created_at, updated_at`,
+      [device_id, title]
+    )
+    res.json(rows[0])
+  } catch (e) { res.status(500).json({ error: e.message }) }
+})
+
+// PATCH /api/sessions/:id  — update title
+app.patch('/api/sessions/:id', async (req, res) => {
+  const { title } = req.body
+  try {
+    await pool.query(
+      `UPDATE chat_sessions SET title = $1, updated_at = NOW() WHERE id = $2`,
+      [title, req.params.id]
+    )
+    res.json({ ok: true })
+  } catch (e) { res.status(500).json({ error: e.message }) }
+})
+
+// DELETE /api/sessions/:id  — delete session + all its messages (CASCADE)
+app.delete('/api/sessions/:id', async (req, res) => {
+  try {
+    await pool.query('DELETE FROM chat_sessions WHERE id = $1', [req.params.id])
+    res.json({ ok: true })
+  } catch (e) { res.status(500).json({ error: e.message }) }
+})
+
+// GET /api/sessions/:id/messages  — load message history
+app.get('/api/sessions/:id/messages', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, role, content, sources, created_at
+       FROM chat_messages
+       WHERE session_id = $1
+       ORDER BY created_at ASC`,
+      [req.params.id]
+    )
+    res.json(rows)
+  } catch (e) { res.status(500).json({ error: e.message }) }
+})
+
+
+// ─── /api/chat — SSE streaming endpoint ──────────────────────────────────────
 app.post('/api/chat', async (req, res) => {
-  const { message, history = [] } = req.body
+  const { message, history = [], session_id } = req.body
 
   if (!message || typeof message !== 'string') {
     return res.status(400).json({ error: 'message is required' })
   }
 
-  // ── SSE headers ──────────────────────────────────────────────────────────────
+  // ── SSE headers ───────────────────────────────────────────────────────────
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8')
   res.setHeader('Cache-Control', 'no-cache, no-transform')
   res.setHeader('Connection', 'keep-alive')
-  res.setHeader('X-Accel-Buffering', 'no')   // disable nginx buffering
+  res.setHeader('X-Accel-Buffering', 'no')
   res.flushHeaders()
 
-  // Helper — write one SSE event
   const send = (payload) => res.write(`data: ${JSON.stringify(payload)}\n\n`)
   const done  = ()       => { res.write('data: [DONE]\n\n'); res.end() }
 
   try {
-    // 1. Embed query
+    // 1. Save user message to DB (fire-and-forget, don't block stream)
+    if (session_id) {
+      pool.query(
+        `INSERT INTO chat_messages (session_id, role, content) VALUES ($1, 'user', $2)`,
+        [session_id, message]
+      ).catch(e => console.error('[db] save user msg:', e.message))
+    }
+
+    // 2. Embed + retrieve context
     const queryEmbedding = await embed(message)
+    const contextChunks  = await retrieveContext(queryEmbedding)
+    const systemPrompt   = buildSystemPrompt(contextChunks)
+    const sources        = [...new Set(contextChunks.map(c => c.metadata?.subreddit).filter(Boolean))]
 
-    // 2. Retrieve context
-    const contextChunks = await retrieveContext(queryEmbedding)
-
-    // 3. System prompt
-    const systemPrompt = buildSystemPrompt(contextChunks)
-
-    // 4. Source subreddits (sent at the end)
-    const sources = [...new Set(contextChunks.map(c => c.metadata?.subreddit).filter(Boolean))]
-
-    // 5. Stream from DeepSeek
+    // 3. Stream from DeepSeek
     const upstream = await axios.post(
       `${DS_BASE}/v1/chat/completions`,
       {
@@ -168,7 +236,7 @@ app.post('/api/chat', async (req, res) => {
         ],
         temperature: 0.72,
         max_tokens: 1024,
-        stream: true,          // ← enable streaming
+        stream: true,
       },
       {
         headers: { Authorization: `Bearer ${DEEPSEEK_API_KEY}`, 'Content-Type': 'application/json' },
@@ -176,28 +244,35 @@ app.post('/api/chat', async (req, res) => {
       }
     )
 
-    let buf = ''
+    let buf = '', fullContent = ''
 
     upstream.data.on('data', (chunk) => {
       buf += chunk.toString()
-      // SSE lines end with \n\n; process complete lines only
       const lines = buf.split('\n')
-      buf = lines.pop()          // keep any partial line in the buffer
-
+      buf = lines.pop()
       for (const line of lines) {
         const trimmed = line.trim()
         if (!trimmed.startsWith('data:')) continue
         const raw = trimmed.slice(5).trim()
         if (raw === '[DONE]') continue
         try {
-          const parsed  = JSON.parse(raw)
-          const content = parsed.choices?.[0]?.delta?.content
-          if (content) send({ type: 'token', content })
-        } catch { /* ignore malformed chunk */ }
+          const content = JSON.parse(raw).choices?.[0]?.delta?.content
+          if (content) { fullContent += content; send({ type: 'token', content }) }
+        } catch { /* ignore malformed */ }
       }
     })
 
     upstream.data.on('end', () => {
+      // 4. Save completed AI message to DB
+      if (session_id && fullContent) {
+        pool.query(
+          `INSERT INTO chat_messages (session_id, role, content, sources) VALUES ($1, 'assistant', $2, $3)
+           ON CONFLICT DO NOTHING`,
+          [session_id, fullContent, JSON.stringify(sources)]
+        ).then(() =>
+          pool.query(`UPDATE chat_sessions SET updated_at = NOW() WHERE id = $1`, [session_id])
+        ).catch(e => console.error('[db] save ai msg:', e.message))
+      }
       send({ type: 'sources', sources })
       done()
     })
@@ -208,7 +283,6 @@ app.post('/api/chat', async (req, res) => {
       done()
     })
 
-    // If the client disconnects, destroy the upstream
     req.on('close', () => upstream.data.destroy())
 
   } catch (err) {

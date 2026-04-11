@@ -8,56 +8,129 @@ import ThinkingBubble from './components/ThinkingBubble.jsx'
 import ChatInput from './components/ChatInput.jsx'
 import WelcomeScreen from './components/WelcomeScreen.jsx'
 
-const makeId = () => Math.random().toString(36).slice(2, 10)
-
 const API_BASE = import.meta.env.VITE_API_BASE_URL || ''
+const makeId   = () => Math.random().toString(36).slice(2, 10)
+
+// ─── device_id — stable browser identity (no auth needed) ────────────────────
+function getDeviceId() {
+  let id = localStorage.getItem('kgp_device_id')
+  if (!id) { id = crypto.randomUUID(); localStorage.setItem('kgp_device_id', id) }
+  return id
+}
+const DEVICE_ID = getDeviceId()
+
+// ─── API helpers ──────────────────────────────────────────────────────────────
+const api = {
+  getSessions:  ()       => fetch(`${API_BASE}/api/sessions?device_id=${DEVICE_ID}`).then(r => r.json()),
+  createSession:(title)  => fetch(`${API_BASE}/api/sessions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ device_id: DEVICE_ID, title }) }).then(r => r.json()),
+  deleteSession:(id)     => fetch(`${API_BASE}/api/sessions/${id}`, { method: 'DELETE' }),
+  renameSession:(id, t)  => fetch(`${API_BASE}/api/sessions/${id}`, { method: 'PATCH',  headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: t }) }),
+  getMessages:  (id)     => fetch(`${API_BASE}/api/sessions/${id}/messages`).then(r => r.json()),
+}
 
 export default function App() {
-  const init = { id: makeId(), title: 'New conversation', messages: [] }
-  const [sessions, setSessions] = useState([init])
-  const [activeId, setActiveId] = useState(init.id)
+  const [sessions,    setSessions]    = useState([])
+  const [activeId,    setActiveId]    = useState(null)
+  const [messages,    setMessages]    = useState([])   // messages for active session
   const [sidebarOpen, setSidebarOpen] = useState(true)
-  const [isLoading, setIsLoading] = useState(false)
-  const [error, setError] = useState(null)
+  const [isLoading,   setIsLoading]   = useState(false)
+  const [isFetching,  setIsFetching]  = useState(true) // initial load
+  const [error,       setError]       = useState(null)
   const bottomRef = useRef(null)
 
-  const active = sessions.find(s => s.id === activeId) ?? sessions[0]
+  const activeSession = sessions.find(s => s.id === activeId) ?? null
 
+  // ── Scroll to bottom on new messages ──────────────────────────────────────
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [active.messages, isLoading])
+  }, [messages, isLoading])
 
-  const newSession = useCallback(() => {
-    const s = { id: makeId(), title: 'New conversation', messages: [] }
-    setSessions(p => [s, ...p])
-    setActiveId(s.id)
-    setError(null)
+  // ── Load sessions on mount ────────────────────────────────────────────────
+  useEffect(() => {
+    api.getSessions()
+      .then(rows => {
+        if (!Array.isArray(rows)) { setSessions([]); return }
+        setSessions(rows)
+        if (rows.length > 0) {
+          setActiveId(rows[0].id)
+          loadMessages(rows[0].id)
+        }
+      })
+      .catch(() => setSessions([]))
+      .finally(() => setIsFetching(false))
   }, [])
 
-  const patchSession = useCallback((id, fn) =>
-    setSessions(p => p.map(s => s.id === id ? fn(s) : s)), [])
+  // ── Load messages for a session ───────────────────────────────────────────
+  const loadMessages = useCallback((sessionId) => {
+    setMessages([])
+    api.getMessages(sessionId)
+      .then(rows => {
+        if (!Array.isArray(rows)) return
+        setMessages(rows.map(r => ({
+          id:      r.id,
+          role:    r.role,
+          content: r.content,
+          sources: r.sources ?? [],
+        })))
+      })
+      .catch(() => setMessages([]))
+  }, [])
 
+  // ── Select a session ──────────────────────────────────────────────────────
+  const selectSession = useCallback((id) => {
+    if (id === activeId) return
+    setActiveId(id)
+    setError(null)
+    loadMessages(id)
+  }, [activeId, loadMessages])
+
+  // ── Create a new session ──────────────────────────────────────────────────
+  const newSession = useCallback(async () => {
+    try {
+      const session = await api.createSession('New conversation')
+      setSessions(p => [session, ...p])
+      setActiveId(session.id)
+      setMessages([])
+      setError(null)
+    } catch {
+      setError('Could not create new chat. Is the backend running?')
+    }
+  }, [])
+
+  // ── Delete a session ──────────────────────────────────────────────────────
+  const deleteSession = useCallback(async (id) => {
+    await api.deleteSession(id)
+    setSessions(p => {
+      const next = p.filter(s => s.id !== id)
+      if (id === activeId) {
+        if (next.length > 0) { setActiveId(next[0].id); loadMessages(next[0].id) }
+        else                 { setActiveId(null); setMessages([]) }
+      }
+      return next
+    })
+  }, [activeId, loadMessages])
+
+  // ── Send message ──────────────────────────────────────────────────────────
   const handleSend = useCallback(async (text) => {
-    if (!text.trim() || isLoading) return
+    if (!text.trim() || isLoading || !activeId) return
     setError(null)
 
-    // Freeze which session this send belongs to.
-    // If the user switches chats mid-stream, tokens still go to the right one.
-    const sessionId = activeId
-
-    // Snapshot history BEFORE we mutate state (used as context for the LLM)
-    const historySnapshot = active.messages.slice()
+    const sessionId      = activeId
+    const historySnapshot = messages.slice()
 
     const userMsg = { id: makeId(), role: 'user',      content: text }
     const aiId    = makeId()
     const aiMsg   = { id: aiId,    role: 'assistant', content: '', sources: [] }
 
-    // ONE atomic patch — adds both messages at once (prevents the duplicate-message bug)
-    patchSession(sessionId, s => ({
-      ...s,
-      title:    s.messages.length === 0 ? text.slice(0, 45) + (text.length > 45 ? '…' : '') : s.title,
-      messages: [...s.messages, userMsg, aiMsg],
-    }))
+    // Add both optimistically — one atomic state update
+    setMessages(prev => [...prev, userMsg, aiMsg])
+
+    // Update session title after first message
+    if (messages.length === 0) {
+      const title = text.slice(0, 45) + (text.length > 45 ? '…' : '')
+      api.renameSession(sessionId, title).catch(() => {})
+      setSessions(p => p.map(s => s.id === sessionId ? { ...s, title } : s))
+    }
 
     setIsLoading(true)
 
@@ -65,7 +138,7 @@ export default function App() {
       const res = await fetch(`${API_BASE}/api/chat`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ message: text, history: historySnapshot }),
+        body:    JSON.stringify({ message: text, history: historySnapshot, session_id: sessionId }),
       })
 
       if (!res.ok || !res.body) {
@@ -83,7 +156,7 @@ export default function App() {
 
         buf += decoder.decode(value, { stream: true })
         const lines = buf.split('\n')
-        buf = lines.pop()   // hold back any incomplete line
+        buf = lines.pop()
 
         for (const line of lines) {
           const trimmed = line.trim()
@@ -93,60 +166,63 @@ export default function App() {
 
           try {
             const evt = JSON.parse(raw)
-
             if (evt.type === 'token') {
-              // Always patch by sessionId — not activeId — to stay in the right chat
-              patchSession(sessionId, s => ({
-                ...s,
-                messages: s.messages.map(m =>
-                  m.id === aiId ? { ...m, content: m.content + evt.content } : m
-                ),
-              }))
-
+              setMessages(prev => prev.map(m =>
+                m.id === aiId ? { ...m, content: m.content + evt.content } : m
+              ))
             } else if (evt.type === 'sources') {
-              patchSession(sessionId, s => ({
-                ...s,
-                messages: s.messages.map(m =>
-                  m.id === aiId ? { ...m, sources: evt.sources } : m
-                ),
-              }))
-
+              setMessages(prev => prev.map(m =>
+                m.id === aiId ? { ...m, sources: evt.sources } : m
+              ))
             } else if (evt.type === 'error') {
               throw new Error(evt.error)
             }
           } catch (parseErr) {
-            // Re-throw real errors; ignore JSON parse failures on SSE metadata lines
             if (parseErr.message && !parseErr.message.startsWith('Unexpected')) throw parseErr
           }
         }
       }
     } catch (err) {
       setError(err.message || 'Something went wrong. Is the backend running?')
-      // Remove the empty AI placeholder — leaves the user message intact
-      patchSession(sessionId, s => ({
-        ...s,
-        messages: s.messages.filter(m => m.id !== aiId),
-      }))
+      setMessages(prev => prev.filter(m => m.id !== aiId))
     } finally {
       setIsLoading(false)
     }
-  }, [activeId, active.messages, isLoading, patchSession])
+  }, [activeId, messages, isLoading])
 
-
+  // ─── Render ───────────────────────────────────────────────────────────────
+  if (isFetching) {
+    return (
+      <div className="flex h-screen bg-gray-950 items-center justify-center">
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-10 h-10 rounded-2xl flex items-center justify-center"
+            style={{ background: 'linear-gradient(135deg,#3b82f6,#7c3aed)' }}>
+            <span className="text-white text-lg">⚡</span>
+          </div>
+          <div className="flex gap-1.5">
+            <span className="thinking-dot" />
+            <span className="thinking-dot" />
+            <span className="thinking-dot" />
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="flex h-screen bg-gray-950 text-slate-200 overflow-hidden" style={{ fontFamily: "'Inter', system-ui, sans-serif" }}>
 
-      {/* ── Sidebar ─────────────────────────────────────── */}
+      {/* ── Sidebar ─────────────────────────────────────────────────────── */}
       <Sidebar
         sessions={sessions}
         activeId={activeId}
         onNew={newSession}
-        onSelect={id => { setActiveId(id); setError(null) }}
+        onSelect={selectSession}
+        onDelete={deleteSession}
         isOpen={sidebarOpen}
       />
 
-      {/* ── Main ────────────────────────────────────────── */}
+      {/* ── Main ────────────────────────────────────────────────────────── */}
       <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
 
         {/* Header */}
@@ -159,9 +235,11 @@ export default function App() {
           </button>
 
           <div className="flex-1 min-w-0">
-            <p className="text-sm font-semibold text-slate-100 truncate">{active.title}</p>
-            {active.messages.length > 0 && (
-              <p className="text-xs text-gray-500">{active.messages.length} messages</p>
+            <p className="text-sm font-semibold text-slate-100 truncate">
+              {activeSession?.title ?? 'KGP Catalyst'}
+            </p>
+            {messages.length > 0 && (
+              <p className="text-xs text-gray-500">{messages.length} messages</p>
             )}
           </div>
 
@@ -187,30 +265,33 @@ export default function App() {
           )}
         </AnimatePresence>
 
-        {/* Messages scroll area */}
+        {/* Messages */}
         <div className="flex-1 overflow-y-auto">
-          {active.messages.length === 0 && !isLoading
+          {messages.length === 0 && !isLoading && activeId
             ? <WelcomeScreen onPrompt={handleSend} />
+            : !activeId
+            ? (
+              <div className="flex items-center justify-center h-full text-gray-600 text-sm">
+                Create a new conversation to get started
+              </div>
+            )
             : (
               <div className="max-w-3xl mx-auto px-4 sm:px-6 py-8 space-y-6">
                 <AnimatePresence initial={false}>
-                  {active.messages
+                  {messages
                     .filter(msg => msg.role === 'user' || msg.content.length > 0)
                     .map(msg => <MessageBubble key={msg.id} message={msg} />)
                   }
                 </AnimatePresence>
-                {/* Show thinking dots only until first token arrives */}
-                {isLoading && active.messages[active.messages.length - 1]?.content === '' && (
-                  <ThinkingBubble />
-                )}
+                {isLoading && messages[messages.length - 1]?.content === '' && <ThinkingBubble />}
                 <div ref={bottomRef} />
               </div>
             )
           }
         </div>
 
-        {/* Input area */}
-        <ChatInput onSend={handleSend} isLoading={isLoading} />
+        {/* Input */}
+        <ChatInput onSend={handleSend} isLoading={isLoading} disabled={!activeId} />
       </div>
     </div>
   )

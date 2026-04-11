@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import { motion } from 'framer-motion'
 import { ArrowUp, Square } from 'lucide-react'
 
-export default function ChatInput({ onSend, isLoading }) {
+export default function ChatInput({ onSend, isLoading, disabled = false }) {
   const [input, setInput] = useState('')
   const ref = useRef(null)
 

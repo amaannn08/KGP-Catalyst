@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "node --watch server.js",
     "start": "node server.js",
+    "migrate": "node migrate.js",
     "ingest": "node ingest.js",
     "ingest:watch": "node ingest.js --watch",
     "ingest:reset": "rm -f .ingest_state.json && echo 'State cleared — next ingest will process from byte 0'"
