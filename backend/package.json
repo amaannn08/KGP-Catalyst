@@ -1,0 +1,30 @@
+{
+  "name": "kgp-catalyst-backend",
+  "version": "1.0.0",
+  "description": "RAG-powered Socratic chatbot backend for IIT KGP students",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch server.js",
+    "start": "node server.js",
+    "ingest": "node ingest.js",
+    "ingest:watch": "node ingest.js --watch",
+    "ingest:reset": "rm -f .ingest_state.json && echo 'State cleared — next ingest will process from byte 0'"
+  },
+  "keywords": [
+    "rag",
+    "deepseek",
+    "pgvector",
+    "chatbot"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@google/genai": "^1.49.0",
+    "axios": "^1.15.0",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.1",
+    "express": "^5.2.1",
+    "pg": "^8.20.0"
+  }
+}
