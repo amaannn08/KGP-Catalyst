@@ -2,7 +2,7 @@ import { Sparkles } from 'lucide-react'
 
 export default function ThinkingBubble() {
   return (
-    <div className="flex gap-3 items-start msg-in">
+    <div className="flex gap-2 sm:gap-3 items-start msg-in min-w-0">
       <div className="w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0 mt-1"
         style={{ background: 'linear-gradient(135deg,#3b82f6,#7c3aed)', boxShadow: '0 2px 10px rgba(59,130,246,0.4)' }}>
         <Sparkles size={11} className="text-white" />

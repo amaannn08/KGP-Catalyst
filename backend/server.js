@@ -45,8 +45,15 @@ app.use((req, _res, next) => {
 const pool = new pg.Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
-  max: 10,
+  max: parseInt(process.env.PG_POOL_MAX || '10', 10),
   idleTimeoutMillis: 30_000,
+  connectionTimeoutMillis: 10_000,
+})
+
+// Required: idle clients can error after server-side disconnect (common on Neon);
+// without this, Node can throw an unhandled 'error' on the pool.
+pool.on('error', (err) => {
+  console.error('[pg pool]', err.message)
 })
 
 
@@ -55,6 +62,7 @@ const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY
 const DS_BASE          = 'https://api.deepseek.com'
 const CHAT_MODEL       = 'deepseek-chat'         // DeepSeek for chat
 const TOP_K            = 5                       // Context chunks to retrieve
+const CHAT_HISTORY_MAX = parseInt(process.env.CHAT_HISTORY_MAX || '24', 10) // prior turns sent to the model (user+assistant rows)
 
 // embed() is imported from ./services/embeddings.js — same client used by ingest
 
@@ -210,28 +218,44 @@ app.post('/api/chat', async (req, res) => {
   const done  = ()       => { res.write('data: [DONE]\n\n'); res.end() }
 
   try {
-    // 1. Save user message to DB (fire-and-forget, don't block stream)
+    // 1. Prior turns for the model — DB is source of truth when session_id is set (before we insert this user message)
+    let priorMessages = []
+    if (session_id) {
+      const { rows } = await pool.query(
+        `SELECT role, content FROM chat_messages WHERE session_id = $1 ORDER BY created_at ASC`,
+        [session_id]
+      )
+      priorMessages = rows
+        .filter((r) => r.content && String(r.content).trim())
+        .map((r) => ({ role: r.role, content: r.content }))
+    } else if (Array.isArray(history)) {
+      priorMessages = history
+        .filter((m) => m?.content && String(m.content).trim())
+        .map((m) => ({ role: m.role, content: m.content }))
+    }
+
+    // 2. Save user message to DB (fire-and-forget, don't block stream)
     if (session_id) {
       pool.query(
         `INSERT INTO chat_messages (session_id, role, content) VALUES ($1, 'user', $2)`,
         [session_id, message]
-      ).catch(e => console.error('[db] save user msg:', e.message))
+      ).catch((e) => console.error('[db] save user msg:', e.message))
     }
 
-    // 2. Embed + retrieve context
+    // 3. Embed + retrieve context
     const queryEmbedding = await embed(message)
     const contextChunks  = await retrieveContext(queryEmbedding)
     const systemPrompt   = buildSystemPrompt(contextChunks)
     const sources        = [...new Set(contextChunks.map(c => c.metadata?.subreddit).filter(Boolean))]
 
-    // 3. Stream from DeepSeek
+    // 4. Stream from DeepSeek
     const upstream = await axios.post(
       `${DS_BASE}/v1/chat/completions`,
       {
         model: CHAT_MODEL,
         messages: [
           { role: 'system', content: systemPrompt },
-          ...history.slice(-10).map(m => ({ role: m.role, content: m.content })),
+          ...priorMessages.slice(-CHAT_HISTORY_MAX),
           { role: 'user', content: message },
         ],
         temperature: 0.72,
@@ -263,7 +287,7 @@ app.post('/api/chat', async (req, res) => {
     })
 
     upstream.data.on('end', () => {
-      // 4. Save completed AI message to DB
+      // 5. Save completed AI message to DB
       if (session_id && fullContent) {
         pool.query(
           `INSERT INTO chat_messages (session_id, role, content, sources) VALUES ($1, 'assistant', $2, $3)
@@ -305,10 +329,9 @@ app.get('/api/health', async (_req, res) => {
 // ─── Start ─────────────────────────────────────────────────────────────────────
 app.listen(PORT, () => console.log(`🚀 KGP Catalyst backend on http://localhost:${PORT}`))
 
-// Note: no pool.end() signal handlers.
-// node --watch sends SIGTERM on file-change restarts; calling pool.end() there
-// kills in-flight requests. NeonDB is serverless — idle connections close
-// automatically via idleTimeoutMillis. Production containers (Render/Railway)
-// just SIGKILL after SIGTERM anyway.
+// No pool.end() on SIGTERM/SIGINT: node --watch sends SIGTERM on reload and
+// closing the pool would abort in-flight /api/chat streams. Idle sockets are
+// recycled via idleTimeoutMillis; Neon closes quiet connections server-side.
+// For one-off scripts that exit cleanly, call pool.end() explicitly (see ingest.js).
 
 

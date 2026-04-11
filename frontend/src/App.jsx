@@ -1,5 +1,5 @@
-import { useState, useRef, useEffect, useCallback } from 'react'
-import { AnimatePresence, motion } from 'framer-motion'
+import { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react'
+import { AnimatePresence, motion as Motion } from 'framer-motion'
 import { PanelLeft, AlertCircle, X } from 'lucide-react'
 
 import Sidebar from './components/Sidebar.jsx'
@@ -32,13 +32,19 @@ export default function App() {
   const [sessions,    setSessions]    = useState([])
   const [activeId,    setActiveId]    = useState(null)
   const [messages,    setMessages]    = useState([])   // messages for active session
-  const [sidebarOpen, setSidebarOpen] = useState(true)
+  // Start closed everywhere; open on desktop only after layout (mobile stays hidden)
+  const [sidebarOpen, setSidebarOpen] = useState(false)
   const [isLoading,   setIsLoading]   = useState(false)
   const [isFetching,  setIsFetching]  = useState(true) // initial load
   const [error,       setError]       = useState(null)
   const bottomRef = useRef(null)
 
   const activeSession = sessions.find(s => s.id === activeId) ?? null
+
+  useLayoutEffect(() => {
+    if (typeof window === 'undefined') return
+    if (window.matchMedia('(min-width: 768px)').matches) setSidebarOpen(true)
+  }, [])
 
   // ── Scroll to bottom on new messages ──────────────────────────────────────
   useEffect(() => {
@@ -93,6 +99,9 @@ export default function App() {
     setActiveId(id)
     setError(null)
     loadMessages(id)
+    if (typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches) {
+      setSidebarOpen(false)
+    }
   }, [activeId, loadMessages])
 
   // ── Create a new session ──────────────────────────────────────────────────
@@ -103,6 +112,9 @@ export default function App() {
       setActiveId(session.id)
       setMessages([])
       setError(null)
+      if (typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches) {
+        setSidebarOpen(false)
+      }
     } catch {
       setError('Could not create new chat. Is the backend running?')
     }
@@ -204,7 +216,7 @@ export default function App() {
   // ─── Render ───────────────────────────────────────────────────────────────
   if (isFetching) {
     return (
-      <div className="flex h-screen bg-gray-950 items-center justify-center">
+      <div className="flex min-h-dvh h-dvh bg-gray-950 items-center justify-center">
         <div className="flex flex-col items-center gap-4">
           <div className="w-10 h-10 rounded-2xl flex items-center justify-center"
             style={{ background: 'linear-gradient(135deg,#3b82f6,#7c3aed)' }}>
@@ -221,7 +233,19 @@ export default function App() {
   }
 
   return (
-    <div className="flex h-screen bg-gray-950 text-slate-200 overflow-hidden" style={{ fontFamily: "'Inter', system-ui, sans-serif" }}>
+    <div
+      className="flex min-h-dvh h-dvh bg-gray-950 text-slate-200 overflow-hidden pt-[env(safe-area-inset-top)]"
+      style={{ fontFamily: "'Inter', system-ui, sans-serif" }}
+    >
+      {/* Mobile: tap outside to close drawer */}
+      {sidebarOpen && (
+        <button
+          type="button"
+          aria-label="Close conversation list"
+          className="fixed inset-0 z-30 bg-black/50 backdrop-blur-[1px] md:hidden"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
 
       {/* ── Sidebar ─────────────────────────────────────────────────────── */}
       <Sidebar
@@ -234,23 +258,26 @@ export default function App() {
       />
 
       {/* ── Main ────────────────────────────────────────────────────────── */}
-      <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
+      <div className="flex flex-col flex-1 min-w-0 min-h-0 overflow-hidden w-full max-w-full">
 
         {/* Header */}
-        <header className="flex items-center gap-3 px-4 h-14 bg-gray-900 border-b border-gray-800 flex-shrink-0">
+        <header className="flex items-center gap-2 sm:gap-3 px-2.5 sm:px-4 min-h-12 sm:min-h-14 py-1.5 sm:py-2 bg-gray-900 border-b border-gray-800 flex-shrink-0">
           <button
+            type="button"
             onClick={() => setSidebarOpen(v => !v)}
-            className="w-8 h-8 rounded-lg flex items-center justify-center text-gray-500 hover:text-gray-300 hover:bg-gray-800 transition-colors"
+            className="min-h-11 min-w-11 shrink-0 -ml-1 rounded-lg flex items-center justify-center text-gray-500 hover:text-gray-300 hover:bg-gray-800 transition-colors tap-none"
+            aria-expanded={sidebarOpen}
+            aria-controls="conversation-sidebar"
           >
-            <PanelLeft size={17} />
+            <PanelLeft size={18} />
           </button>
 
-          <div className="flex-1 min-w-0">
-            <p className="text-sm font-semibold text-slate-100 truncate">
+          <div className="flex-1 min-w-0 pr-1">
+            <p className="text-sm font-semibold text-slate-100 truncate leading-tight">
               {activeSession?.title ?? 'KGP Catalyst'}
             </p>
             {messages.length > 0 && (
-              <p className="text-xs text-gray-500">{messages.length} messages</p>
+              <p className="hidden sm:block text-xs text-gray-500">{messages.length} messages</p>
             )}
           </div>
 
@@ -259,16 +286,16 @@ export default function App() {
         {/* Error banner */}
         <AnimatePresence>
           {error && (
-            <motion.div
+            <Motion.div
               initial={{ height: 0, opacity: 0 }}
               animate={{ height: 'auto', opacity: 1 }}
               exit={{ height: 0, opacity: 0 }}
-              className="flex items-center gap-3 px-5 py-2.5 bg-red-950 border-b border-red-900 text-red-300 text-sm flex-shrink-0"
+              className="flex items-start sm:items-center gap-2 sm:gap-3 px-3 sm:px-5 py-2.5 bg-red-950 border-b border-red-900 text-red-300 text-xs sm:text-sm flex-shrink-0"
             >
-              <AlertCircle size={14} className="flex-shrink-0" />
-              <span className="flex-1">{error}</span>
-              <button onClick={() => setError(null)} className="text-red-500 hover:text-red-300"><X size={14} /></button>
-            </motion.div>
+              <AlertCircle size={14} className="flex-shrink-0 mt-0.5 sm:mt-0" />
+              <span className="flex-1 min-w-0 break-words">{error}</span>
+              <button type="button" onClick={() => setError(null)} className="min-h-9 min-w-9 shrink-0 flex items-center justify-center text-red-500 hover:text-red-300 tap-none" aria-label="Dismiss error"><X size={16} /></button>
+            </Motion.div>
           )}
         </AnimatePresence>
 
@@ -283,7 +310,7 @@ export default function App() {
               </div>
             )
             : (
-              <div className="max-w-3xl mx-auto px-4 sm:px-6 py-8 space-y-6">
+              <div className="max-w-3xl mx-auto w-full px-3 sm:px-6 py-4 sm:py-8 space-y-4 sm:space-y-6 pb-[env(safe-area-inset-bottom)]">
                 <AnimatePresence initial={false}>
                   {messages
                     .filter(msg => msg.role === 'user' || msg.content.length > 0)
