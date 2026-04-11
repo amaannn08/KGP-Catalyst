@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { PanelLeft, AlertCircle, X, Radio } from 'lucide-react'
+import { PanelLeft, AlertCircle, X } from 'lucide-react'
 
 import Sidebar from './components/Sidebar.jsx'
 import MessageBubble from './components/MessageBubble.jsx'
@@ -45,19 +45,30 @@ export default function App() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, isLoading])
 
-  // ── Load sessions on mount ────────────────────────────────────────────────
+  // ── On every full load: fetch history, then always start a fresh session ──
   useEffect(() => {
-    api.getSessions()
-      .then(rows => {
-        if (!Array.isArray(rows)) { setSessions([]); return }
-        setSessions(rows)
-        if (rows.length > 0) {
-          setActiveId(rows[0].id)
-          loadMessages(rows[0].id)
-        }
-      })
-      .catch(() => setSessions([]))
-      .finally(() => setIsFetching(false))
+    let cancelled = false
+    ;(async () => {
+      try {
+        const rows = await api.getSessions()
+        if (!cancelled) setSessions(Array.isArray(rows) ? rows : [])
+      } catch {
+        if (!cancelled) setSessions([])
+      }
+      try {
+        const session = await api.createSession('New conversation')
+        if (cancelled) return
+        setSessions(prev => [session, ...prev.filter(s => s.id !== session.id)])
+        setActiveId(session.id)
+        setMessages([])
+        setError(null)
+      } catch {
+        if (!cancelled) setError('Could not create new chat. Is the backend running?')
+      } finally {
+        if (!cancelled) setIsFetching(false)
+      }
+    })()
+    return () => { cancelled = true }
   }, [])
 
   // ── Load messages for a session ───────────────────────────────────────────
@@ -243,10 +254,6 @@ export default function App() {
             )}
           </div>
 
-          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-950 border border-emerald-800 text-emerald-400 text-xs font-medium">
-            <Radio size={10} className="animate-pulse" />
-            RAG Live
-          </div>
         </header>
 
         {/* Error banner */}
@@ -266,7 +273,7 @@ export default function App() {
         </AnimatePresence>
 
         {/* Messages */}
-        <div className="flex-1 overflow-y-auto">
+        <div className="flex-1 min-h-0 overflow-y-auto">
           {messages.length === 0 && !isLoading && activeId
             ? <WelcomeScreen onPrompt={handleSend} />
             : !activeId

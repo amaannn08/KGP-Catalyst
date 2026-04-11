@@ -105,11 +105,6 @@ export default function Sidebar({ sessions, activeId, onNew, onSelect, onDelete,
           </p>
         )}
       </nav>
-
-      {/* Footer */}
-      <div className="px-4 py-3 border-t border-gray-800 flex-shrink-0">
-        <p className="text-[11px] text-gray-600 whitespace-nowrap">Gemini Embeddings · DeepSeek Chat</p>
-      </div>
     </div>
   )
 }
