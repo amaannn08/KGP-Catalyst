@@ -10,6 +10,8 @@ import WelcomeScreen from './components/WelcomeScreen.jsx'
 
 const makeId = () => Math.random().toString(36).slice(2, 10)
 
+const API_BASE = import.meta.env.VITE_API_BASE_URL || ''
+
 export default function App() {
   const init = { id: makeId(), title: 'New conversation', messages: [] }
   const [sessions, setSessions] = useState([init])
@@ -38,31 +40,99 @@ export default function App() {
   const handleSend = useCallback(async (text) => {
     if (!text.trim() || isLoading) return
     setError(null)
-    const userMsg = { id: makeId(), role: 'user', content: text }
-    patchSession(activeId, s => ({
+
+    // Freeze which session this send belongs to.
+    // If the user switches chats mid-stream, tokens still go to the right one.
+    const sessionId = activeId
+
+    // Snapshot history BEFORE we mutate state (used as context for the LLM)
+    const historySnapshot = active.messages.slice()
+
+    const userMsg = { id: makeId(), role: 'user',      content: text }
+    const aiId    = makeId()
+    const aiMsg   = { id: aiId,    role: 'assistant', content: '', sources: [] }
+
+    // ONE atomic patch — adds both messages at once (prevents the duplicate-message bug)
+    patchSession(sessionId, s => ({
       ...s,
-      title: s.messages.length === 0 ? text.slice(0, 40) + (text.length > 40 ? '…' : '') : s.title,
-      messages: [...s.messages, userMsg],
+      title:    s.messages.length === 0 ? text.slice(0, 45) + (text.length > 45 ? '…' : '') : s.title,
+      messages: [...s.messages, userMsg, aiMsg],
     }))
+
     setIsLoading(true)
+
     try {
-      const res = await fetch('/api/chat', {
-        method: 'POST',
+      const res = await fetch(`${API_BASE}/api/chat`, {
+        method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text, history: active.messages }),
+        body:    JSON.stringify({ message: text, history: historySnapshot }),
       })
-      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `Error ${res.status}`)
-      const data = await res.json()
-      patchSession(activeId, s => ({
-        ...s,
-        messages: [...s.messages, { id: makeId(), role: 'assistant', content: data.reply, sources: data.sources ?? [] }],
-      }))
+
+      if (!res.ok || !res.body) {
+        const body = await res.json().catch(() => ({}))
+        throw new Error(body.error ?? `Server error ${res.status}`)
+      }
+
+      const reader  = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buf = ''
+
+      outer: while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buf += decoder.decode(value, { stream: true })
+        const lines = buf.split('\n')
+        buf = lines.pop()   // hold back any incomplete line
+
+        for (const line of lines) {
+          const trimmed = line.trim()
+          if (!trimmed.startsWith('data:')) continue
+          const raw = trimmed.slice(5).trim()
+          if (raw === '[DONE]') break outer
+
+          try {
+            const evt = JSON.parse(raw)
+
+            if (evt.type === 'token') {
+              // Always patch by sessionId — not activeId — to stay in the right chat
+              patchSession(sessionId, s => ({
+                ...s,
+                messages: s.messages.map(m =>
+                  m.id === aiId ? { ...m, content: m.content + evt.content } : m
+                ),
+              }))
+
+            } else if (evt.type === 'sources') {
+              patchSession(sessionId, s => ({
+                ...s,
+                messages: s.messages.map(m =>
+                  m.id === aiId ? { ...m, sources: evt.sources } : m
+                ),
+              }))
+
+            } else if (evt.type === 'error') {
+              throw new Error(evt.error)
+            }
+          } catch (parseErr) {
+            // Re-throw real errors; ignore JSON parse failures on SSE metadata lines
+            if (parseErr.message && !parseErr.message.startsWith('Unexpected')) throw parseErr
+          }
+        }
+      }
     } catch (err) {
-      setError(err.message || 'Backend unreachable. Is the server running on port 5000?')
+      setError(err.message || 'Something went wrong. Is the backend running?')
+      // Remove the empty AI placeholder — leaves the user message intact
+      patchSession(sessionId, s => ({
+        ...s,
+        messages: s.messages.filter(m => m.id !== aiId),
+      }))
     } finally {
       setIsLoading(false)
     }
   }, [activeId, active.messages, isLoading, patchSession])
+
+
 
   return (
     <div className="flex h-screen bg-gray-950 text-slate-200 overflow-hidden" style={{ fontFamily: "'Inter', system-ui, sans-serif" }}>
@@ -124,9 +194,15 @@ export default function App() {
             : (
               <div className="max-w-3xl mx-auto px-4 sm:px-6 py-8 space-y-6">
                 <AnimatePresence initial={false}>
-                  {active.messages.map(msg => <MessageBubble key={msg.id} message={msg} />)}
+                  {active.messages
+                    .filter(msg => msg.role === 'user' || msg.content.length > 0)
+                    .map(msg => <MessageBubble key={msg.id} message={msg} />)
+                  }
                 </AnimatePresence>
-                {isLoading && <ThinkingBubble />}
+                {/* Show thinking dots only until first token arrives */}
+                {isLoading && active.messages[active.messages.length - 1]?.content === '' && (
+                  <ThinkingBubble />
+                )}
                 <div ref={bottomRef} />
               </div>
             )

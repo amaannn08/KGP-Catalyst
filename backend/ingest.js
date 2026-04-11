@@ -12,7 +12,7 @@ import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import pg from 'pg'
-import { GoogleGenerativeAI } from '@google/generative-ai'
+import { embedBatch, DIMENSIONS } from './services/embeddings.js'
 import dotenv from 'dotenv'
 
 dotenv.config()
@@ -24,17 +24,12 @@ const EMBED_MODEL   = 'text-embedding-004'   // 768 dims
 const CHUNK_MAX     = 1800
 const OVERLAP       = 150
 const MIN_CHUNK_LEN = 40
-const BATCH_SIZE    = 100                    // Gemini max per batchEmbedContents
+const BATCH_SIZE    = 100   // chunk accumulation size before flushing to DB
 const POLL_INTERVAL = 10_000                 // ms between file checks in watch mode
 
 const WATCH_MODE = process.argv.includes('--watch')
 
-// ─── Clients ──────────────────────────────────────────────────────────────────
-const genAI    = new GoogleGenerativeAI(process.env.GEMINI_API_KEY)
-const embedder = genAI.getGenerativeModel(
-  { model: EMBED_MODEL },
-  { apiVersion: 'v1' }   // text-embedding-004 is v1-only, not v1beta
-)
+// embedBatch() imported from services/embeddings.js
 
 const pool = new pg.Pool({
   connectionString: process.env.DATABASE_URL,
@@ -111,13 +106,6 @@ function extractChunks(post) {
   return units
 }
 
-// ─── Gemini batch embed ───────────────────────────────────────────────────────
-async function batchEmbed(texts) {
-  const requests = texts.map(text => ({ content: { parts: [{ text }], role: 'user' } }))
-  const result   = await embedder.batchEmbedContents({ requests })
-  return result.embeddings.map(e => e.values)
-}
-
 // ─── DB insert ────────────────────────────────────────────────────────────────
 async function insertRow(content, metadata, embedding) {
   await pool.query(
@@ -134,8 +122,8 @@ async function processBatch(queue) {
   const texts = queue.map(q => q.text)
   const metas = queue.map(q => q.meta)
 
-  process.stdout.write(`  ⚡ Embedding ${texts.length} chunks…`)
-  const embeddings = await batchEmbed(texts)
+  process.stdout.write(`  ⚡ Embedding ${texts.length} chunks (${DIMENSIONS}d)…`)
+  const embeddings = await embedBatch(texts)   // uses services/embeddings.js
 
   const CONCURRENCY = 5
   for (let i = 0; i < texts.length; i += CONCURRENCY) {

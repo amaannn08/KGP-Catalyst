@@ -3,7 +3,7 @@ import cors from 'cors'
 import dotenv from 'dotenv'
 import pg from 'pg'
 import axios from 'axios'
-import { GoogleGenerativeAI } from '@google/generative-ai'
+import { embed } from './services/embeddings.js'
 
 dotenv.config()
 
@@ -57,20 +57,7 @@ const DS_BASE          = 'https://api.deepseek.com'
 const CHAT_MODEL       = 'deepseek-chat'         // DeepSeek for chat
 const TOP_K            = 5                       // Context chunks to retrieve
 
-// Gemini — used exclusively for embeddings (text-embedding-004 → 768 dims)
-const genAI    = new GoogleGenerativeAI(process.env.GEMINI_API_KEY)
-const embedder = genAI.getGenerativeModel(
-  { model: 'text-embedding-004' },
-  { apiVersion: 'v1' }   // text-embedding-004 is v1-only, not v1beta
-)
-
-// ─── Embed a single query via Gemini ──────────────────────────────────────────
-async function embedText(text) {
-  const result = await embedder.embedContent({
-    content: { parts: [{ text }], role: 'user' },
-  })
-  return result.embedding.values // float[768]
-}
+// embed() is imported from ./services/embeddings.js — same client used by ingest
 
 // ─── pgvector similarity search ───────────────────────────────────────────────
 async function retrieveContext(queryEmbedding, topK = TOP_K) {
@@ -137,7 +124,7 @@ This tool is used in an **academic setting and will be reviewed by faculty**. Yo
 - **E**nd with an opening, not a conclusion.`
 }
 
-// ─── /api/chat endpoint ────────────────────────────────────────────────────────
+// ─── /api/chat — SSE streaming endpoint ─────────────────────────────────────────────────────
 app.post('/api/chat', async (req, res) => {
   const { message, history = [] } = req.body
 
@@ -145,54 +132,89 @@ app.post('/api/chat', async (req, res) => {
     return res.status(400).json({ error: 'message is required' })
   }
 
-  try {
-    // 1. Embed the user query
-    const queryEmbedding = await embedText(message)
+  // ── SSE headers ──────────────────────────────────────────────────────────────
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8')
+  res.setHeader('Cache-Control', 'no-cache, no-transform')
+  res.setHeader('Connection', 'keep-alive')
+  res.setHeader('X-Accel-Buffering', 'no')   // disable nginx buffering
+  res.flushHeaders()
 
-    // 2. Retrieve top-k similar chunks from NeonDB
+  // Helper — write one SSE event
+  const send = (payload) => res.write(`data: ${JSON.stringify(payload)}\n\n`)
+  const done  = ()       => { res.write('data: [DONE]\n\n'); res.end() }
+
+  try {
+    // 1. Embed query
+    const queryEmbedding = await embed(message)
+
+    // 2. Retrieve context
     const contextChunks = await retrieveContext(queryEmbedding)
 
-    // 3. Build system prompt
+    // 3. System prompt
     const systemPrompt = buildSystemPrompt(contextChunks)
 
-    // 4. Build conversation history (last 10 turns for token budget)
-    const recentHistory = history.slice(-10).map(m => ({
-      role: m.role,
-      content: m.content,
-    }))
+    // 4. Source subreddits (sent at the end)
+    const sources = [...new Set(contextChunks.map(c => c.metadata?.subreddit).filter(Boolean))]
 
-    // 5. Call DeepSeek Chat API
-    const chatRes = await axios.post(
+    // 5. Stream from DeepSeek
+    const upstream = await axios.post(
       `${DS_BASE}/v1/chat/completions`,
       {
         model: CHAT_MODEL,
         messages: [
           { role: 'system', content: systemPrompt },
-          ...recentHistory,
+          ...history.slice(-10).map(m => ({ role: m.role, content: m.content })),
           { role: 'user', content: message },
         ],
         temperature: 0.72,
         max_tokens: 1024,
-        stream: false,
+        stream: true,          // ← enable streaming
       },
-      { headers: { Authorization: `Bearer ${DEEPSEEK_API_KEY}`, 'Content-Type': 'application/json' } }
+      {
+        headers: { Authorization: `Bearer ${DEEPSEEK_API_KEY}`, 'Content-Type': 'application/json' },
+        responseType: 'stream',
+      }
     )
 
-    const reply = chatRes.data.choices[0].message.content
+    let buf = ''
 
-    // 6. Extract unique source subreddits for the frontend badge
-    const sources = [...new Set(
-      contextChunks
-        .map(c => c.metadata?.subreddit)
-        .filter(Boolean)
-    )]
+    upstream.data.on('data', (chunk) => {
+      buf += chunk.toString()
+      // SSE lines end with \n\n; process complete lines only
+      const lines = buf.split('\n')
+      buf = lines.pop()          // keep any partial line in the buffer
 
-    return res.json({ reply, sources })
+      for (const line of lines) {
+        const trimmed = line.trim()
+        if (!trimmed.startsWith('data:')) continue
+        const raw = trimmed.slice(5).trim()
+        if (raw === '[DONE]') continue
+        try {
+          const parsed  = JSON.parse(raw)
+          const content = parsed.choices?.[0]?.delta?.content
+          if (content) send({ type: 'token', content })
+        } catch { /* ignore malformed chunk */ }
+      }
+    })
+
+    upstream.data.on('end', () => {
+      send({ type: 'sources', sources })
+      done()
+    })
+
+    upstream.data.on('error', (err) => {
+      console.error('[stream error]', err.message)
+      send({ type: 'error', error: 'Stream interrupted' })
+      done()
+    })
+
+    // If the client disconnects, destroy the upstream
+    req.on('close', () => upstream.data.destroy())
+
   } catch (err) {
     console.error('[/api/chat] Error:', err?.response?.data ?? err.message)
-    return res.status(500).json({
-      error: err?.response?.data?.error?.message ?? 'Internal server error',
-    })
+    send({ type: 'error', error: err?.response?.data?.error?.message ?? 'Internal server error' })
+    done()
   }
 })
 
@@ -209,6 +231,10 @@ app.get('/api/health', async (_req, res) => {
 // ─── Start ─────────────────────────────────────────────────────────────────────
 app.listen(PORT, () => console.log(`🚀 KGP Catalyst backend on http://localhost:${PORT}`))
 
-process.on('SIGTERM', () => pool.end())
-process.on('SIGINT',  () => pool.end())
+// Note: no pool.end() signal handlers.
+// node --watch sends SIGTERM on file-change restarts; calling pool.end() there
+// kills in-flight requests. NeonDB is serverless — idle connections close
+// automatically via idleTimeoutMillis. Production containers (Render/Railway)
+// just SIGKILL after SIGTERM anyway.
+
 
