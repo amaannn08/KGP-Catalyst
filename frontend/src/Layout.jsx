@@ -1,10 +1,14 @@
-import { NavLink, Outlet } from 'react-router-dom'
+import { NavLink, useLocation, Navigate } from 'react-router-dom'
 import { MessageSquare, LayoutDashboard, Leaf, User } from 'lucide-react'
+import ChatApp from './ChatApp.jsx'
+import DashboardPage from './pages/DashboardPage.jsx'
 
 // Mock user identity — Wing Leader chip
-const USER_IDENTITY = { hall: 'Radhakrishnan Hall', block: 'Block B', wing: 'Wing 2', role: 'Wing Leader' }
+const USER_IDENTITY = { hall: 'Radhakrishnan Hall', block: '', wing: '', role: 'Hall President' }
 
 export default function Layout() {
+  const loc = useLocation()
+
   return (
     <div className="flex flex-col min-h-dvh h-dvh" style={{ background: '#020a04' }}>
 
@@ -65,8 +69,6 @@ export default function Layout() {
           <div className="hidden md:flex items-center gap-2 px-2.5 py-1 rounded-md" style={{ background: 'rgba(22,163,74,0.1)', border: '1px solid rgba(22,163,74,0.2)' }}>
             <User size={12} className="text-emerald-500" />
             <span className="text-[10px] font-semibold text-emerald-100">{USER_IDENTITY.hall}</span>
-            <span className="text-[10px] text-emerald-600 font-medium px-1">—</span>
-            <span className="text-[10px] text-gray-400">{USER_IDENTITY.block}, {USER_IDENTITY.wing}</span>
             <span className="ml-2 text-[9px] px-1.5 py-0.5 rounded-sm font-bold text-emerald-900 bg-emerald-400">
               {USER_IDENTITY.role}
             </span>
@@ -84,9 +86,16 @@ export default function Layout() {
         </div>
       </nav>
 
-      {/* ── Page content ───────────────────────────── */}
-      <div className="flex-1 min-h-0 overflow-hidden">
-        <Outlet />
+      {/* ── Page content (Cached/CSS Display) ──────────────── */}
+      <div className="flex-1 min-h-0 overflow-hidden relative">
+        <div style={{ display: loc.pathname === '/' ? 'block' : 'none', height: '100%', width: '100%' }}>
+          <ChatApp />
+        </div>
+        <div style={{ display: loc.pathname === '/dashboard' ? 'block' : 'none', height: '100%', width: '100%' }}>
+          <DashboardPage />
+        </div>
+        {/* Wildcard redirect back to chat if unknown route */}
+        {loc.pathname !== '/' && loc.pathname !== '/dashboard' && <Navigate to="/" replace />}
       </div>
     </div>
   )
