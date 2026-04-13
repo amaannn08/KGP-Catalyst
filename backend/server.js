@@ -12,7 +12,6 @@ const PORT = parseInt(process.env.PORT || '5000', 10)
 const app = express()
 
 // ─── CORS ──────────────────────────────────────────────────────────────────────
-// Allow Vite dev server (5173/5174) and same-host production deployments
 const ALLOWED_ORIGINS = [
   'http://localhost:5173',
   'http://localhost:5174',
@@ -33,7 +32,6 @@ app.use(cors({
 
 app.use(express.json({ limit: '4mb' }))
 
-// Simple request logger for dev
 app.use((req, _res, next) => {
   if (process.env.NODE_ENV !== 'production') {
     console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`)
@@ -50,21 +48,16 @@ const pool = new pg.Pool({
   connectionTimeoutMillis: 10_000,
 })
 
-// Required: idle clients can error after server-side disconnect (common on Neon);
-// without this, Node can throw an unhandled 'error' on the pool.
 pool.on('error', (err) => {
   console.error('[pg pool]', err.message)
 })
 
-
 // ─── API Clients & Constants ──────────────────────────────────────────────────
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY
 const DS_BASE          = 'https://api.deepseek.com'
-const CHAT_MODEL       = 'deepseek-chat'         // DeepSeek for chat
-const TOP_K            = 5                       // Context chunks to retrieve
-const CHAT_HISTORY_MAX = parseInt(process.env.CHAT_HISTORY_MAX || '24', 10) // prior turns sent to the model (user+assistant rows)
-
-// embed() is imported from ./services/embeddings.js — same client used by ingest
+const CHAT_MODEL       = 'deepseek-chat'
+const TOP_K            = 5
+const CHAT_HISTORY_MAX = parseInt(process.env.CHAT_HISTORY_MAX || '24', 10)
 
 // ─── pgvector similarity search ───────────────────────────────────────────────
 async function retrieveContext(queryEmbedding, topK = TOP_K) {
@@ -80,9 +73,146 @@ async function retrieveContext(queryEmbedding, topK = TOP_K) {
   return result.rows
 }
 
-// ─── Build the Socratic system prompt ─────────────────────────────────────────
-function buildSystemPrompt(contextChunks) {
-  // Format context — show type and topic only, no author/URL attribution
+// ─── Mock Leaderboard Data Generator ──────────────────────────────────────────
+// Simulates real-time sensor data from the cyber-physical architecture
+// All 14 residential halls of IIT Kharagpur
+const HALLS = ['Azad', 'Nehru', 'RP', 'LLR', 'Patel', 'VS', 'RK', 'JCB', 'SN', 'MT', 'Gokhale', 'HJB', 'MMM', 'MS']
+const HALL_FULL_NAMES = {
+  Azad:    'Azad Hall',
+  Nehru:   'Nehru Hall',
+  RP:      'Rajendra Prasad Hall',
+  LLR:     'Lal Lajpat Rai Hall',
+  Patel:   'Patel Hall',
+  VS:      'Vidya Sagar Hall',
+  RK:      'Ramakrishna Hall',
+  JCB:     'J.C. Bose Hall',
+  SN:      'Sarojini Naidu Hall',
+  MT:      'Mother Teresa Hall',
+  Gokhale: 'Gokhale Hall',
+  HJB:     'Homi J. Bhabha Hall',
+  MMM:     'Madan Mohan Malaviya Hall',
+  MS:      'Meghnad Saha Hall',
+}
+const BLOCKS = ['A', 'B', 'C', 'D']
+const WINGS  = ['1', '2', '3']
+
+// Base sustainability scores for all 14 halls
+const BASE_SCORES = {
+  Azad:    { energy: 88, water: 79, biomass: 71 },
+  Nehru:   { energy: 61, water: 85, biomass: 66 },
+  RP:      { energy: 79, water: 72, biomass: 88 },
+  LLR:     { energy: 74, water: 68, biomass: 82 },
+  Patel:   { energy: 83, water: 64, biomass: 77 },
+  VS:      { energy: 66, water: 91, biomass: 59 },
+  RK:      { energy: 98, water: 96, biomass: 95 },
+  JCB:     { energy: 85, water: 69, biomass: 73 },
+  SN:      { energy: 77, water: 88, biomass: 65 },
+  MT:      { energy: 69, water: 82, biomass: 78 },
+  Gokhale: { energy: 58, water: 74, biomass: 91 },
+  HJB:     { energy: 92, water: 63, biomass: 70 },
+  MMM:     { energy: 76, water: 71, biomass: 85 },
+  MS:      { energy: 64, water: 93, biomass: 62 },
+}
+
+function jitter(val, range = 4) {
+  return Math.min(100, Math.max(0, val + (Math.random() * range * 2 - range)))
+}
+
+function generateLeaderboardData() {
+  const now = Date.now()
+  const halls = HALLS.map(name => {
+    const base = BASE_SCORES[name]
+    const energy  = parseFloat(jitter(base.energy, 3).toFixed(1))
+    const water   = parseFloat(jitter(base.water, 3).toFixed(1))
+    const biomass = parseFloat(jitter(base.biomass, 3).toFixed(1))
+    const composite = parseFloat(((energy * 0.4 + water * 0.35 + biomass * 0.25)).toFixed(1))
+
+    const blocks = BLOCKS.map(blk => {
+      const bEnergy  = parseFloat(jitter(energy, 5).toFixed(1))
+      const bWater   = parseFloat(jitter(water, 5).toFixed(1))
+      const bBiomass = parseFloat(jitter(biomass, 5).toFixed(1))
+      const wings = WINGS.map(wng => ({
+        wing:    `Wing ${wng}`,
+        energy:  parseFloat(jitter(bEnergy, 6).toFixed(1)),
+        water:   parseFloat(jitter(bWater, 6).toFixed(1)),
+        biomass: parseFloat(jitter(bBiomass, 6).toFixed(1)),
+      }))
+      return {
+        block: `Block ${blk}`,
+        energy: bEnergy,
+        water: bWater,
+        biomass: bBiomass,
+        composite: parseFloat(((bEnergy * 0.4 + bWater * 0.35 + bBiomass * 0.25)).toFixed(1)),
+        wings,
+      }
+    })
+
+    return { name, fullName: HALL_FULL_NAMES[name] || name, energy, water, biomass, composite, blocks }
+  })
+
+  // Sort by composite descending
+  halls.sort((a, b) => b.composite - a.composite)
+  halls.forEach((h, i) => { h.rank = i + 1 })
+
+  return { halls, timestamp: now, updatedAt: new Date(now).toISOString() }
+}
+
+// ─── Mock Competitive Notifications ───────────────────────────────────────────
+const NOTIFICATION_TEMPLATES = [
+  { urgency: 'info',     msg: 'Radhakrishnan Hall reduced energy consumption by 5% this week. Great progress toward campus sustainability goals.' },
+  { urgency: 'warning',  msg: 'Wing B, Block 3 — we noticed a late-night energy anomaly. A quick check of your appliances could help optimize efficiency.' },
+  { urgency: 'info',     msg: 'Nehru Hall has made significant strides in water conservation. Consider sharing best practices across blocks!' },
+  { urgency: 'positive', msg: 'Block D is showing excellent consistency in their sustainability habits. Keep up the mindful usage.' },
+  { urgency: 'warning',  msg: 'Wing 1, Block A — continuous water flow detected for 23 minutes. Please ensure taps are fully closed to prevent waste.' },
+  { urgency: 'positive', msg: 'Block B\'s biomass yield just surged 12%. Efficient irrigation is paying off — excellent work on the gardens!' },
+  { urgency: 'info',     msg: 'AZAD Hall is optimizing their energy usage patterns beautifully. Explore your dashboard to find similar opportunities.' },
+  { urgency: 'warning',  msg: 'Block C, there has been a slight dip in internal sustainability metrics. Let\'s review our baseline and recalibrate.' },
+  { urgency: 'positive', msg: 'LLR Hall leads the water conservation effort for the 3rd consecutive night. Their discipline is showing in the numbers.' },
+  { urgency: 'positive', msg: 'Wing 3, Lajpat — your energy reduction rate is the steepest in the hall tonight. That\'s the kind of environmental leadership we need.' },
+  { urgency: 'info',     msg: 'Campus-wide energy load is high today. Small individual actions like turning off fans can make a massive collective impact.' },
+  { urgency: 'warning',  msg: 'Midnight anomaly detected in Block C plumbing. Flow rate 40% above expected baseline. Let\'s get this checked to preserve resources.' },
+]
+
+let notifIndex = 0
+const activeNotifications = []
+
+function getNotifications() {
+  // Rotate through templates, simulating a live feed
+  const count = 3 + Math.floor(Math.random() * 3)
+  const result = []
+  for (let i = 0; i < Math.min(count, NOTIFICATION_TEMPLATES.length); i++) {
+    const tmpl = NOTIFICATION_TEMPLATES[(notifIndex + i) % NOTIFICATION_TEMPLATES.length]
+    result.push({
+      id:        `notif-${Date.now()}-${i}`,
+      urgency:   tmpl.urgency,
+      message:   tmpl.msg,
+      timestamp: new Date(Date.now() - i * 3 * 60 * 1000).toISOString(),
+    })
+  }
+  notifIndex = (notifIndex + 1) % NOTIFICATION_TEMPLATES.length
+  return result
+}
+
+// ─── Leaderboard API ──────────────────────────────────────────────────────────
+app.get('/api/leaderboard', (_req, res) => {
+  try {
+    res.json(generateLeaderboardData())
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// ─── Notifications API ────────────────────────────────────────────────────────
+app.get('/api/notifications', (_req, res) => {
+  try {
+    res.json({ notifications: getNotifications() })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// ─── KGP Catalyst System Prompt (Sustainability + Mezirow + MIND-SAFE) ──────────────────
+function buildSystemPrompt(contextChunks, leaderboardSummary = '') {
   const contextText = contextChunks
     .map((c, i) => {
       const meta = c.metadata || {}
@@ -91,49 +221,63 @@ function buildSystemPrompt(contextChunks) {
         meta.post_title ? `on "${meta.post_title}"` : null,
         meta.subreddit  ? `(r/${meta.subreddit})`  : null,
       ].filter(Boolean).join(' ')
-      return `[Source ${i + 1} — ${label}]\n${c.content}`
+      return `[Campus Voice ${i + 1} — ${label}]\n${c.content}`
     })
     .join('\n\n---\n\n')
 
-  return `You are **KGP Catalyst** — a thoughtful, empathetic Socratic companion for students at IIT Kharagpur (KGP). You are built on **Transformative Learning Theory**: rather than giving flat answers, you help students examine their assumptions, habits, and values through reflective dialogue.
+  return `You are **KGP Catalyst** — the intelligent sustainability mentor for IIT Kharagpur's residential network. You are not a search engine, advisor, or tutor. You are a **sustainability facilitator**: you highlight patterns, encourage sustainable habits, and construct identity-driven narratives that compel positive behavioural change.
 
-## Your Persona
-- You are NOT a search engine. You are a warm, trusted guide — like a senior student who genuinely cares.
-- You ground your responses in real campus experiences, referencing the student voices provided below.
-- You gently challenge assumptions and invite reflection without being preachy or moralistic.
+## The Sustainability Engine
+IIT KGP halls track three sustainability metrics continuously via a cyber-physical sensor network:
+- ⚡ **Energy Conservation** (40% weight): Block-level smart meter data, NILM-based load inference
+- 💧 **Water Conservation** (35% weight): High-resolution flowmeters, anomaly detection
+- 🌱 **Garden-to-Table Efforts** (25% weight): Soil sensors, yield-based biomass scoring
 
-## Retrieved Campus Context (RAG)
-The following are real posts and comments from IIT KGP students on Reddit. Use them as authentic evidence for your response:
+Halls are ranked on a live composite dashboard. Within each hall, Blocks collaborate internally, and within blocks, Wings bear direct responsibility for positive resource patterns.
 
-${contextText || 'No specific context retrieved — draw on general IIT KGP knowledge.'}
+## Current Live Rankings (Agentic RAG Context)
+${leaderboardSummary || 'Real-time data unavailable — draw on general campus patterns.'}
 
-## Response Style
-1. **Answer** the user's question concisely, grounded in the retrieved campus voices above.
-2. **Reflect** — end with one gentle Socratic question that invites the user to examine their own habits or assumptions.
-3. **Format** — use markdown (bold, lists) when it aids clarity. Keep responses under 300 words unless depth is genuinely needed.
+## Retrieved Campus Intelligence (RAG)
+${contextText || 'No specific context retrieved — draw on general IIT KGP sustainability knowledge.'}
 
-## Content Safety (MANDATORY)
-This tool is used in an **academic setting and will be reviewed by faculty**. You MUST:
-- **Rephrase or omit** any profanity, crude slang, or vulgar language found in the source material — convey the meaning professionally instead.
-- **Never reproduce** personally identifying information (usernames, account names, specific personal details).
-- **Do not amplify** rants, hate speech, politically inflammatory content, or content that demeans individuals or groups.
-- If a retrieved context contains inappropriate material, extract the **underlying theme or concern** and discuss that constructively instead.
-- Maintain a respectful, constructive, and academically appropriate tone at all times.
+## Transformative Learning: Mezirow's 10 Phases (Your State Machine)
+You guide students through transformation. Identify which phase applies and intervene accordingly:
+1. **Disorienting Dilemma** — Deliver the ecological reality: gently show the data gap.
+2. **Self-Examination** — Acknowledge emotional resistance; use MIND-SAFE.
+3. **Critical Assessment** — Connect personal habits to macro-campus patterns.
+4. **Shared Struggle Recognition** — Normalise the challenge; frame it as collective.
+5. **Exploring Options** — Suggest viable alternatives without mandating.
+6. **Planning Action** — Assist in forming a concrete time-bound commitment.
+7. **Acquiring Knowledge** — Provide the "why" behind efficiency gains.
+8. **Trying New Roles** — Encourage Wing Leader-level ownership.
+9. **Building Competence** — Reinforce progress with comparative data.
+10. **Reintegration** — Anchor the new sustainable identity permanently.
 
-## MIND-SAFE Framework (Psychological Safety)
-- **M**eet the user where they are — don't assume their stance.
-- **I**nvite reflection, don't demand change.
-- **N**ormalise struggle — stress and confusion are valid.
-- **D**on't catastrophise — reframe challenges as growth opportunities.
-- **S**upport autonomy — the user's choices are theirs to make.
-- **A**cknowledge emotions before pivoting to analysis.
-- **F**ocus on curiosity, not judgment.
-- **E**nd with an opening, not a conclusion.`
+When responding, **label your current phase** briefly at the start: e.g., *[Phase 1 — Disorienting Dilemma]*
+
+## Response Principles (Provocation Over Inquiry)
+1. **Be declarative, not interrogative** — Don't ask how to improve. State what's wrong.
+2. **Use identity framing** — "Lajpatians," "Block C," "Wing B" — not "you."
+3. **Make comparisons explicit and frequent** — margins, ranks, percentages.
+4. **Urgency is mandatory** — time-sensitive language creates competitive pressure.
+5. **End with ONE sharp Socratic question** — not to comfort, but to catalyse reflection.
+
+**Format**: Use bold, bullet lists where clarity demands it. Keep under 280 words unless depth is critical. Always include the phase label.
+
+## MIND-SAFE Safeguards (Non-Negotiable)
+- Never target or shame individuals — always Wings/Blocks/Halls.
+- Never reproduce usernames or personal data from retrieved context.
+- Reframe extreme negativity as competitive opportunity.
+- If a user shows distress, pivot to collective responsibility framing.
+- Maintain academic appropriateness — strip crude language from campus voices, convey meaning professionally.
+
+## Content Safety
+This tool is reviewed by faculty. Rephrase profanity, omit personal identifiers, and never amplify harmful content.`
 }
 
 // ─── Session routes ────────────────────────────────────────────────────────────
 
-// GET /api/sessions?device_id=xxx  — list sessions (newest first)
 app.get('/api/sessions', async (req, res) => {
   const { device_id } = req.query
   if (!device_id) return res.status(400).json({ error: 'device_id required' })
@@ -150,7 +294,6 @@ app.get('/api/sessions', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }) }
 })
 
-// POST /api/sessions  — create session
 app.post('/api/sessions', async (req, res) => {
   const { device_id, title = 'New conversation' } = req.body
   if (!device_id) return res.status(400).json({ error: 'device_id required' })
@@ -164,7 +307,6 @@ app.post('/api/sessions', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }) }
 })
 
-// PATCH /api/sessions/:id  — update title
 app.patch('/api/sessions/:id', async (req, res) => {
   const { title } = req.body
   try {
@@ -176,7 +318,6 @@ app.patch('/api/sessions/:id', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }) }
 })
 
-// DELETE /api/sessions/:id  — delete session + all its messages (CASCADE)
 app.delete('/api/sessions/:id', async (req, res) => {
   try {
     await pool.query('DELETE FROM chat_sessions WHERE id = $1', [req.params.id])
@@ -184,7 +325,6 @@ app.delete('/api/sessions/:id', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }) }
 })
 
-// GET /api/sessions/:id/messages  — load message history
 app.get('/api/sessions/:id/messages', async (req, res) => {
   try {
     const { rows } = await pool.query(
@@ -207,7 +347,6 @@ app.post('/api/chat', async (req, res) => {
     return res.status(400).json({ error: 'message is required' })
   }
 
-  // ── SSE headers ───────────────────────────────────────────────────────────
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8')
   res.setHeader('Cache-Control', 'no-cache, no-transform')
   res.setHeader('Connection', 'keep-alive')
@@ -218,7 +357,7 @@ app.post('/api/chat', async (req, res) => {
   const done  = ()       => { res.write('data: [DONE]\n\n'); res.end() }
 
   try {
-    // 1. Prior turns for the model — DB is source of truth when session_id is set (before we insert this user message)
+    // 1. Prior turns
     let priorMessages = []
     if (session_id) {
       const { rows } = await pool.query(
@@ -234,7 +373,7 @@ app.post('/api/chat', async (req, res) => {
         .map((m) => ({ role: m.role, content: m.content }))
     }
 
-    // 2. Save user message to DB (fire-and-forget, don't block stream)
+    // 2. Save user message (fire-and-forget)
     if (session_id) {
       pool.query(
         `INSERT INTO chat_messages (session_id, role, content) VALUES ($1, 'user', $2)`,
@@ -245,10 +384,18 @@ app.post('/api/chat', async (req, res) => {
     // 3. Embed + retrieve context
     const queryEmbedding = await embed(message)
     const contextChunks  = await retrieveContext(queryEmbedding)
-    const systemPrompt   = buildSystemPrompt(contextChunks)
+
+    // 4. Generate leaderboard summary for system prompt grounding
+    const lb = generateLeaderboardData()
+    const leaderboardSummary = lb.halls
+      .slice(0, 6)
+      .map(h => `Rank ${h.rank}: ${h.name} Hall — Composite ${h.composite} (Energy: ${h.energy}, Water: ${h.water}, Biomass: ${h.biomass})`)
+      .join('\n')
+
+    const systemPrompt   = buildSystemPrompt(contextChunks, leaderboardSummary)
     const sources        = [...new Set(contextChunks.map(c => c.metadata?.subreddit).filter(Boolean))]
 
-    // 4. Stream from DeepSeek
+    // 5. Stream from DeepSeek
     const upstream = await axios.post(
       `${DS_BASE}/v1/chat/completions`,
       {
@@ -258,7 +405,7 @@ app.post('/api/chat', async (req, res) => {
           ...priorMessages.slice(-CHAT_HISTORY_MAX),
           { role: 'user', content: message },
         ],
-        temperature: 0.72,
+        temperature: 0.78,
         max_tokens: 1024,
         stream: true,
       },
@@ -287,7 +434,6 @@ app.post('/api/chat', async (req, res) => {
     })
 
     upstream.data.on('end', () => {
-      // 5. Save completed AI message to DB
       if (session_id && fullContent) {
         pool.query(
           `INSERT INTO chat_messages (session_id, role, content, sources) VALUES ($1, 'assistant', $2, $3)
@@ -327,11 +473,4 @@ app.get('/api/health', async (_req, res) => {
 })
 
 // ─── Start ─────────────────────────────────────────────────────────────────────
-app.listen(PORT, () => console.log(`🚀 KGP Catalyst backend on http://localhost:${PORT}`))
-
-// No pool.end() on SIGTERM/SIGINT: node --watch sends SIGTERM on reload and
-// closing the pool would abort in-flight /api/chat streams. Idle sockets are
-// recycled via idleTimeoutMillis; Neon closes quiet connections server-side.
-// For one-off scripts that exit cleanly, call pool.end() explicitly (see ingest.js).
-
-
+app.listen(PORT, () => console.log(`🌿 EcoBuddy backend on http://localhost:${PORT}`))

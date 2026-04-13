@@ -1,17 +1,15 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react'
 import { AnimatePresence, motion as Motion } from 'framer-motion'
-import { PanelLeft, AlertCircle, X } from 'lucide-react'
+import { PanelLeft, AlertCircle, X, LayoutDashboard, ChevronDown, ChevronUp } from 'lucide-react'
 
 import Sidebar from './components/Sidebar.jsx'
 import MessageBubble from './components/MessageBubble.jsx'
 import ThinkingBubble from './components/ThinkingBubble.jsx'
 import ChatInput from './components/ChatInput.jsx'
 import WelcomeScreen from './components/WelcomeScreen.jsx'
-
 const API_BASE = import.meta.env.VITE_API_BASE_URL || ''
 const makeId   = () => Math.random().toString(36).slice(2, 10)
 
-// ─── device_id — stable browser identity (no auth needed) ────────────────────
 function getDeviceId() {
   let id = localStorage.getItem('kgp_device_id')
   if (!id) { id = crypto.randomUUID(); localStorage.setItem('kgp_device_id', id) }
@@ -19,23 +17,22 @@ function getDeviceId() {
 }
 const DEVICE_ID = getDeviceId()
 
-// ─── API helpers ──────────────────────────────────────────────────────────────
 const api = {
-  getSessions:  ()       => fetch(`${API_BASE}/api/sessions?device_id=${DEVICE_ID}`).then(r => r.json()),
-  createSession:(title)  => fetch(`${API_BASE}/api/sessions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ device_id: DEVICE_ID, title }) }).then(r => r.json()),
-  deleteSession:(id)     => fetch(`${API_BASE}/api/sessions/${id}`, { method: 'DELETE' }),
-  renameSession:(id, t)  => fetch(`${API_BASE}/api/sessions/${id}`, { method: 'PATCH',  headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: t }) }),
-  getMessages:  (id)     => fetch(`${API_BASE}/api/sessions/${id}/messages`).then(r => r.json()),
+  getSessions:   ()      => fetch(`${API_BASE}/api/sessions?device_id=${DEVICE_ID}`).then(r => r.json()),
+  createSession: (title) => fetch(`${API_BASE}/api/sessions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ device_id: DEVICE_ID, title }) }).then(r => r.json()),
+  deleteSession: (id)    => fetch(`${API_BASE}/api/sessions/${id}`, { method: 'DELETE' }),
+  renameSession: (id, t) => fetch(`${API_BASE}/api/sessions/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: t }) }),
+  getMessages:   (id)    => fetch(`${API_BASE}/api/sessions/${id}/messages`).then(r => r.json()),
 }
 
+// ─── Main App ─────────────────────────────────────────────────────────────────
 export default function App() {
   const [sessions,    setSessions]    = useState([])
   const [activeId,    setActiveId]    = useState(null)
-  const [messages,    setMessages]    = useState([])   // messages for active session
-  // Start closed everywhere; open on desktop only after layout (mobile stays hidden)
+  const [messages,    setMessages]    = useState([])
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [isLoading,   setIsLoading]   = useState(false)
-  const [isFetching,  setIsFetching]  = useState(true) // initial load
+  const [isFetching,  setIsFetching]  = useState(true)
   const [error,       setError]       = useState(null)
   const bottomRef = useRef(null)
 
@@ -43,41 +40,14 @@ export default function App() {
 
   useLayoutEffect(() => {
     if (typeof window === 'undefined') return
-    if (window.matchMedia('(min-width: 768px)').matches) setSidebarOpen(true)
+    const wide = window.matchMedia('(min-width: 768px)')
+    if (wide.matches) setSidebarOpen(true)
   }, [])
 
-  // ── Scroll to bottom on new messages ──────────────────────────────────────
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, isLoading])
 
-  // ── On every full load: fetch history, then always start a fresh session ──
-  useEffect(() => {
-    let cancelled = false
-    ;(async () => {
-      try {
-        const rows = await api.getSessions()
-        if (!cancelled) setSessions(Array.isArray(rows) ? rows : [])
-      } catch {
-        if (!cancelled) setSessions([])
-      }
-      try {
-        const session = await api.createSession('New conversation')
-        if (cancelled) return
-        setSessions(prev => [session, ...prev.filter(s => s.id !== session.id)])
-        setActiveId(session.id)
-        setMessages([])
-        setError(null)
-      } catch {
-        if (!cancelled) setError('Could not create new chat. Is the backend running?')
-      } finally {
-        if (!cancelled) setIsFetching(false)
-      }
-    })()
-    return () => { cancelled = true }
-  }, [])
-
-  // ── Load messages for a session ───────────────────────────────────────────
   const loadMessages = useCallback((sessionId) => {
     setMessages([])
     api.getMessages(sessionId)
@@ -93,7 +63,55 @@ export default function App() {
       .catch(() => setMessages([]))
   }, [])
 
-  // ── Select a session ──────────────────────────────────────────────────────
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      // 1. Load existing sessions — if any, select the first one immediately so
+      //    the welcome screen shows without waiting for createSession to succeed.
+      let existingSessions = []
+      try {
+        const rows = await api.getSessions()
+        existingSessions = Array.isArray(rows) ? rows : []
+        if (!cancelled) {
+          setSessions(existingSessions)
+          if (existingSessions.length > 0) {
+            setActiveId(existingSessions[0].id)
+            loadMessages(existingSessions[0].id)
+          }
+        }
+      } catch {
+        if (!cancelled) setSessions([])
+      }
+
+      // 2. Always create a fresh session for this visit (new conversation)
+      try {
+        const session = await api.createSession('New conversation')
+        if (cancelled) return
+        setSessions(prev => [session, ...prev.filter(s => s.id !== session.id)])
+        setActiveId(session.id)
+        setMessages([])
+        setError(null)
+      } catch {
+        // DB unavailable — use a local fallback so the demo always works
+        if (!cancelled && existingSessions.length === 0) {
+          const fallback = { id: `local-${makeId()}`, title: 'KGP Catalyst Query', created_at: new Date().toISOString(), updated_at: new Date().toISOString() }
+          setSessions(prev => [fallback, ...prev])
+          setActiveId(fallback.id)
+          setMessages([])
+          setError(null)
+        }
+        // If existingSessions.length > 0 we already selected one above — keep it
+        if (!cancelled && existingSessions.length > 0) {
+          setIsFetching(false)
+        }
+      } finally {
+        if (!cancelled) setIsFetching(false)
+      }
+    })()
+    return () => { cancelled = true }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   const selectSession = useCallback((id) => {
     if (id === activeId) return
     setActiveId(id)
@@ -104,7 +122,6 @@ export default function App() {
     }
   }, [activeId, loadMessages])
 
-  // ── Create a new session ──────────────────────────────────────────────────
   const newSession = useCallback(async () => {
     try {
       const session = await api.createSession('New conversation')
@@ -112,43 +129,44 @@ export default function App() {
       setActiveId(session.id)
       setMessages([])
       setError(null)
-      if (typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches) {
-        setSidebarOpen(false)
-      }
     } catch {
-      setError('Could not create new chat. Is the backend running?')
+      // Fallback: local session
+      const fallback = { id: `local-${makeId()}`, title: 'KGP Catalyst Query', created_at: new Date().toISOString(), updated_at: new Date().toISOString() }
+      setSessions(p => [fallback, ...p])
+      setActiveId(fallback.id)
+      setMessages([])
+      setError(null)
+    }
+    if (typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches) {
+      setSidebarOpen(false)
     }
   }, [])
 
-  // ── Delete a session ──────────────────────────────────────────────────────
   const deleteSession = useCallback(async (id) => {
     await api.deleteSession(id)
     setSessions(p => {
       const next = p.filter(s => s.id !== id)
       if (id === activeId) {
         if (next.length > 0) { setActiveId(next[0].id); loadMessages(next[0].id) }
-        else                 { setActiveId(null); setMessages([]) }
+        else                  { setActiveId(null); setMessages([]) }
       }
       return next
     })
   }, [activeId, loadMessages])
 
-  // ── Send message ──────────────────────────────────────────────────────────
   const handleSend = useCallback(async (text) => {
     if (!text.trim() || isLoading || !activeId) return
     setError(null)
 
-    const sessionId      = activeId
+    const sessionId       = activeId
     const historySnapshot = messages.slice()
 
     const userMsg = { id: makeId(), role: 'user',      content: text }
     const aiId    = makeId()
     const aiMsg   = { id: aiId,    role: 'assistant', content: '', sources: [] }
 
-    // Add both optimistically — one atomic state update
     setMessages(prev => [...prev, userMsg, aiMsg])
 
-    // Update session title after first message
     if (messages.length === 0) {
       const title = text.slice(0, 45) + (text.length > 45 ? '…' : '')
       api.renameSession(sessionId, title).catch(() => {})
@@ -158,10 +176,12 @@ export default function App() {
     setIsLoading(true)
 
     try {
+      // Local sessions can't persist to DB — send without session_id for those
+      const isLocalSession = String(sessionId).startsWith('local-')
       const res = await fetch(`${API_BASE}/api/chat`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ message: text, history: historySnapshot, session_id: sessionId }),
+        body:    JSON.stringify({ message: text, history: historySnapshot, session_id: isLocalSession ? undefined : sessionId }),
       })
 
       if (!res.ok || !res.body) {
@@ -213,15 +233,18 @@ export default function App() {
     }
   }, [activeId, messages, isLoading])
 
-  // ─── Render ───────────────────────────────────────────────────────────────
+  // ─── Loading screen ───────────────────────────────────────────────────────
   if (isFetching) {
     return (
-      <div className="flex min-h-dvh h-dvh bg-gray-950 items-center justify-center">
+      <div className="flex min-h-dvh h-dvh items-center justify-center" style={{ background: '#020a04' }}>
         <div className="flex flex-col items-center gap-4">
-          <div className="w-10 h-10 rounded-2xl flex items-center justify-center"
-            style={{ background: 'linear-gradient(135deg,#3b82f6,#7c3aed)' }}>
-            <span className="text-white text-lg">⚡</span>
+          <div
+            className="w-12 h-12 rounded-2xl flex items-center justify-center"
+            style={{ background: 'linear-gradient(135deg,#16a34a,#166534)', boxShadow: '0 8px 32px rgba(22,163,74,0.5)' }}
+          >
+            <span className="text-2xl">🌿</span>
           </div>
+          <p className="text-emerald-700 text-sm font-medium">KGP Catalyst</p>
           <div className="flex gap-1.5">
             <span className="thinking-dot" />
             <span className="thinking-dot" />
@@ -234,10 +257,10 @@ export default function App() {
 
   return (
     <div
-      className="flex min-h-dvh h-dvh bg-gray-950 text-slate-200 overflow-hidden pt-[env(safe-area-inset-top)]"
-      style={{ fontFamily: "'Inter', system-ui, sans-serif" }}
+      className="flex h-full w-full text-slate-200 overflow-hidden"
+      style={{ background: '#020a04', fontFamily: "'Inter', system-ui, sans-serif" }}
     >
-      {/* Mobile: tap outside to close drawer */}
+      {/* Mobile sidebar backdrop */}
       {sidebarOpen && (
         <button
           type="button"
@@ -247,7 +270,7 @@ export default function App() {
         />
       )}
 
-      {/* ── Sidebar ─────────────────────────────────────────────────────── */}
+      {/* ── Sidebar ──────────────────────────────────────────────────────── */}
       <Sidebar
         sessions={sessions}
         activeId={activeId}
@@ -255,29 +278,43 @@ export default function App() {
         onSelect={selectSession}
         onDelete={deleteSession}
         isOpen={sidebarOpen}
+        isPipelineActive={isLoading}
       />
 
-      {/* ── Main ────────────────────────────────────────────────────────── */}
+      {/* ── Main column ──────────────────────────────────────────────────── */}
       <div className="flex flex-col flex-1 min-w-0 min-h-0 overflow-hidden w-full max-w-full">
 
         {/* Header */}
-        <header className="flex items-center gap-2 sm:gap-3 px-2.5 sm:px-4 min-h-12 sm:min-h-14 py-1.5 sm:py-2 bg-gray-900 border-b border-gray-800 flex-shrink-0">
+        <header
+          className="flex items-center gap-2 sm:gap-3 px-2.5 sm:px-4 min-h-12 sm:min-h-14 py-1.5 sm:py-2 flex-shrink-0"
+          style={{ background: '#060f08', borderBottom: '1px solid rgba(34,197,94,0.1)' }}
+        >
+          {/* Sidebar toggle */}
           <button
             type="button"
             onClick={() => setSidebarOpen(v => !v)}
-            className="min-h-11 min-w-11 shrink-0 -ml-1 rounded-lg flex items-center justify-center text-gray-500 hover:text-gray-300 hover:bg-gray-800 transition-colors tap-none"
+            className="min-h-11 min-w-11 shrink-0 -ml-1 rounded-lg flex items-center justify-center text-gray-500 hover:text-emerald-400 hover:bg-emerald-900/20 transition-colors tap-none"
             aria-expanded={sidebarOpen}
             aria-controls="conversation-sidebar"
           >
             <PanelLeft size={18} />
           </button>
 
+          {/* Title */}
           <div className="flex-1 min-w-0 pr-1">
-            <p className="text-sm font-semibold text-slate-100 truncate leading-tight">
-              {activeSession?.title ?? 'KGP Catalyst'}
-            </p>
+            <div className="flex items-center gap-2">
+              <p className="text-sm font-bold text-white truncate leading-tight">
+                {activeSession?.title ?? 'KGP Catalyst'}
+              </p>
+              {isLoading && (
+                <span className="text-[9px] px-1.5 py-0.5 rounded-full font-bold text-emerald-300 flex-shrink-0"
+                  style={{ background: 'rgba(52,211,153,0.1)', border: '1px solid rgba(52,211,153,0.25)' }}>
+                  PROCESSING
+                </span>
+              )}
+            </div>
             {messages.length > 0 && (
-              <p className="hidden sm:block text-xs text-gray-500">{messages.length} messages</p>
+              <p className="hidden sm:block text-[10px] text-gray-600">{messages.length} messages · Sustainability Mode</p>
             )}
           </div>
 
@@ -290,7 +327,8 @@ export default function App() {
               initial={{ height: 0, opacity: 0 }}
               animate={{ height: 'auto', opacity: 1 }}
               exit={{ height: 0, opacity: 0 }}
-              className="flex items-start sm:items-center gap-2 sm:gap-3 px-3 sm:px-5 py-2.5 bg-red-950 border-b border-red-900 text-red-300 text-xs sm:text-sm flex-shrink-0"
+              className="flex items-start sm:items-center gap-2 sm:gap-3 px-3 sm:px-5 py-2.5 border-b text-red-300 text-xs sm:text-sm flex-shrink-0"
+              style={{ background: 'rgba(127,29,29,0.4)', borderColor: 'rgba(239,68,68,0.2)' }}
             >
               <AlertCircle size={14} className="flex-shrink-0 mt-0.5 sm:mt-0" />
               <span className="flex-1 min-w-0 break-words">{error}</span>
@@ -306,7 +344,7 @@ export default function App() {
             : !activeId
             ? (
               <div className="flex items-center justify-center h-full text-gray-600 text-sm">
-                Create a new conversation to get started
+                Create a new query to get started
               </div>
             )
             : (
@@ -327,6 +365,7 @@ export default function App() {
         {/* Input */}
         <ChatInput onSend={handleSend} isLoading={isLoading} disabled={!activeId} />
       </div>
+
     </div>
   )
 }
