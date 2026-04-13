@@ -1,5 +1,5 @@
 import { motion as Motion } from 'framer-motion'
-import { Zap, Droplets, Sprout, Trophy, User, BarChart2 } from 'lucide-react'
+import { Zap, Droplets, Recycle, Trophy, User, BarChart2 } from 'lucide-react'
 
 const CARDS = [
   {
@@ -21,13 +21,13 @@ const CARDS = [
     prompt: 'Which wing in Block B has the worst water discipline right now? What\'s the anomaly pattern and how does it compare to other wings?',
   },
   {
-    icon: Sprout,
+    icon: Recycle,
     color: '#34d399',
     bg: 'rgba(52,211,153,0.1)',
     border: 'rgba(52,211,153,0.22)',
-    title: '🌱 Garden-to-Table',
-    sub: 'How is Block D\'s biomass yield doing?',
-    prompt: 'How is Block D performing in the Garden-to-Table challenge? Compare their biomass yield efficiency to the hall average.',
+    title: '♻️ Waste Management',
+    sub: 'Are we recycling properly?',
+    prompt: 'Check the Waste Management stats for Radhakrishnan Hall. Are we hitting our segregation targets, and how is the recycling accuracy?',
   },
   {
     icon: Trophy,

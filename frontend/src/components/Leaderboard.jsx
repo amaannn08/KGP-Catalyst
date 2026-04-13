@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { AnimatePresence, motion as Motion } from 'framer-motion'
-import { Zap, Droplets, Sprout } from 'lucide-react'
+import { Zap, Droplets, Recycle } from 'lucide-react'
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || ''
 
@@ -9,7 +9,7 @@ const REFRESH_INTERVAL = 15_000 // 15 seconds
 const CHALLENGE_COLORS = {
   energy:  { bg: 'rgba(251,191,36,0.12)',  border: 'rgba(251,191,36,0.25)',  text: '#fbbf24', icon: Zap },
   water:   { bg: 'rgba(56,189,248,0.12)',  border: 'rgba(56,189,248,0.25)',  text: '#38bdf8', icon: Droplets },
-  biomass: { bg: 'rgba(52,211,153,0.12)',  border: 'rgba(52,211,153,0.25)',  text: '#34d399', icon: Sprout },
+  waste:   { bg: 'rgba(52,211,153,0.12)',  border: 'rgba(52,211,153,0.25)',  text: '#34d399', icon: Recycle },
 }
 
 const RANK_MEDAL = ['🥇', '🥈', '🥉', '4th', '5th', '6th']

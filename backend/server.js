@@ -98,20 +98,20 @@ const WINGS  = ['1', '2', '3']
 
 // Base sustainability scores for all 14 halls
 const BASE_SCORES = {
-  Azad:    { energy: 88, water: 79, biomass: 71 },
-  Nehru:   { energy: 61, water: 85, biomass: 66 },
-  RP:      { energy: 79, water: 72, biomass: 88 },
-  LLR:     { energy: 74, water: 68, biomass: 82 },
-  Patel:   { energy: 83, water: 64, biomass: 77 },
-  VS:      { energy: 66, water: 91, biomass: 59 },
-  RK:      { energy: 98, water: 96, biomass: 95 },
-  JCB:     { energy: 85, water: 69, biomass: 73 },
-  SN:      { energy: 77, water: 88, biomass: 65 },
-  MT:      { energy: 69, water: 82, biomass: 78 },
-  Gokhale: { energy: 58, water: 74, biomass: 91 },
-  HJB:     { energy: 92, water: 63, biomass: 70 },
-  MMM:     { energy: 76, water: 71, biomass: 85 },
-  MS:      { energy: 64, water: 93, biomass: 62 },
+  Azad:    { energy: 88, water: 79, waste: 71 },
+  Nehru:   { energy: 61, water: 85, waste: 66 },
+  RP:      { energy: 79, water: 72, waste: 88 },
+  LLR:     { energy: 74, water: 68, waste: 82 },
+  Patel:   { energy: 83, water: 64, waste: 77 },
+  VS:      { energy: 66, water: 91, waste: 59 },
+  RK:      { energy: 98, water: 96, waste: 95 },
+  JCB:     { energy: 85, water: 69, waste: 73 },
+  SN:      { energy: 77, water: 88, waste: 65 },
+  MT:      { energy: 69, water: 82, waste: 78 },
+  Gokhale: { energy: 58, water: 74, waste: 91 },
+  HJB:     { energy: 92, water: 63, waste: 70 },
+  MMM:     { energy: 76, water: 71, waste: 85 },
+  MS:      { energy: 64, water: 93, waste: 62 },
 }
 
 function jitter(val, range = 4) {
@@ -124,30 +124,30 @@ function generateLeaderboardData() {
     const base = BASE_SCORES[name]
     const energy  = parseFloat(jitter(base.energy, 3).toFixed(1))
     const water   = parseFloat(jitter(base.water, 3).toFixed(1))
-    const biomass = parseFloat(jitter(base.biomass, 3).toFixed(1))
-    const composite = parseFloat(((energy * 0.4 + water * 0.35 + biomass * 0.25)).toFixed(1))
+    const waste = parseFloat(jitter(base.waste, 3).toFixed(1))
+    const composite = parseFloat(((energy * 0.4 + water * 0.35 + waste * 0.25)).toFixed(1))
 
     const blocks = BLOCKS.map(blk => {
       const bEnergy  = parseFloat(jitter(energy, 5).toFixed(1))
       const bWater   = parseFloat(jitter(water, 5).toFixed(1))
-      const bBiomass = parseFloat(jitter(biomass, 5).toFixed(1))
+      const bWaste = parseFloat(jitter(waste, 5).toFixed(1))
       const wings = WINGS.map(wng => ({
         wing:    `Wing ${wng}`,
         energy:  parseFloat(jitter(bEnergy, 6).toFixed(1)),
         water:   parseFloat(jitter(bWater, 6).toFixed(1)),
-        biomass: parseFloat(jitter(bBiomass, 6).toFixed(1)),
+        waste: parseFloat(jitter(bWaste, 6).toFixed(1)),
       }))
       return {
         block: `Block ${blk}`,
         energy: bEnergy,
         water: bWater,
-        biomass: bBiomass,
-        composite: parseFloat(((bEnergy * 0.4 + bWater * 0.35 + bBiomass * 0.25)).toFixed(1)),
+        waste: bWaste,
+        composite: parseFloat(((bEnergy * 0.4 + bWater * 0.35 + bWaste * 0.25)).toFixed(1)),
         wings,
       }
     })
 
-    return { name, fullName: HALL_FULL_NAMES[name] || name, energy, water, biomass, composite, blocks }
+    return { name, fullName: HALL_FULL_NAMES[name] || name, energy, water, waste, composite, blocks }
   })
 
   // Sort by composite descending
@@ -164,7 +164,7 @@ const NOTIFICATION_TEMPLATES = [
   { urgency: 'info',     msg: 'Nehru Hall has made significant strides in water conservation. Consider sharing best practices across blocks!' },
   { urgency: 'positive', msg: 'Block D is showing excellent consistency in their sustainability habits. Keep up the mindful usage.' },
   { urgency: 'warning',  msg: 'Wing 1, Block A — continuous water flow detected for 23 minutes. Please ensure taps are fully closed to prevent waste.' },
-  { urgency: 'positive', msg: 'Block B\'s biomass yield just surged 12%. Efficient irrigation is paying off — excellent work on the gardens!' },
+  { urgency: 'positive', msg: 'Block B\'s recycling and waste segregation hit 92% accuracy this week. Great system you have in place!' },
   { urgency: 'info',     msg: 'AZAD Hall is optimizing their energy usage patterns beautifully. Explore your dashboard to find similar opportunities.' },
   { urgency: 'warning',  msg: 'Block C, there has been a slight dip in internal sustainability metrics. Let\'s review our baseline and recalibrate.' },
   { urgency: 'positive', msg: 'LLR Hall leads the water conservation effort for the 3rd consecutive night. Their discipline is showing in the numbers.' },
@@ -231,7 +231,7 @@ function buildSystemPrompt(contextChunks, leaderboardSummary = '') {
 IIT KGP halls track three sustainability metrics continuously via a cyber-physical sensor network:
 - ⚡ **Energy Conservation** (40% weight): Block-level smart meter data, NILM-based load inference
 - 💧 **Water Conservation** (35% weight): High-resolution flowmeters, anomaly detection
-- 🌱 **Garden-to-Table Efforts** (25% weight): Soil sensors, yield-based biomass scoring
+- 🌱 **Waste Management** (25% weight): Smart bins, segregation accuracy routing
 
 Halls are ranked on a live composite dashboard. Within each hall, Blocks collaborate internally, and within blocks, Wings bear direct responsibility for positive resource patterns.
 
